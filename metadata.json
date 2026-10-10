@@ -1,0 +1,10 @@
+{
+  "name": "zerobet",
+  "description": "ZeroBet — plataforma com identidade visual vermelho vinho",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

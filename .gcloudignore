@@ -1,0 +1,13 @@
+# Google Cloud ignore file
+.gcloudignore
+.git/
+.gitignore
+node_modules/
+.wa-auth/
+*.log
+secrets/
+firebase-service-account.json
+*.pem
+*.key
+deploy/
+scripts/*.png
