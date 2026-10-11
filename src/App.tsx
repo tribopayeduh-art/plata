@@ -4,9 +4,10 @@ import { providerLogoAssets } from "./lib/providerLogos";
 import { getBrandedGameCover } from "./lib/gameArtwork";
 import { useEffect, useMemo, useDeferredValue, useRef, useState, useCallback, type TouchEvent, type ReactNode } from 'react';
 import type { User } from 'firebase/auth';
+import {createPortal} from 'react-dom';
 import {
   Bell, ChevronRight, ChevronLeft, CircleUserRound, Gift, Heart, Home, Search, Wallet, Gamepad2,
-  X, Menu, MessageSquare, Maximize2, Minimize2, RefreshCw, AlertCircle, AlertTriangle,
+  X, Menu, MessageSquare, RefreshCw, AlertCircle, AlertTriangle,
   ArrowDownToLine, ArrowUpFromLine, History, Headphones, LogOut, ShieldCheck,
   SlidersHorizontal, Star, Clock3, Trophy, ChevronDown, UserCheck, KeyRound, Network, Megaphone, ShieldAlert, Copy, CheckCircle2, Languages,
   Camera, FileText, Lock, Upload, Check, Info, Flame, Zap, Sparkles, Layers, RotateCcw
@@ -143,20 +144,15 @@ function App() {
 
   useEffect(() => {
     if (!user) { setProfile(null); setFavoriteKeys(new Set()); return; }
-    const unsub = subscribeProfile(user.uid, setProfile);
+    const unsub = subscribeProfile(user.uid, next => { setProfile(next); if(next){const amount=Number(next.walletBalance??next.balance);if(Number.isFinite(amount))setServerBalance(amount);} });
     getFavoriteKeys(user.uid).then(setFavoriteKeys).catch(() => {});
     return unsub;
   }, [user]);
 
   useEffect(() => {
     if (!user || supabaseEnabled) { setServerBalance(null); return; }
-    setServerBalance(null);
     let cancelled = false;
-    let refreshing = false;
-    let refreshAgain = false;
     const loadWallet = async () => {
-      if (refreshing) { refreshAgain = true; return; }
-      refreshing = true;
       try {
         const token = await user.getIdToken();
         const r = await fetch('/api/wallet/summary', {
@@ -167,7 +163,6 @@ function App() {
         if (!cancelled && r.ok) {
           if (Number.isFinite(Number(d.walletBalance))) {
             setServerBalance(Number(d.walletBalance));
-            window.dispatchEvent(new CustomEvent('pg-wallet-snapshot', { detail: { uid: user.uid, balance: Number(d.walletBalance) } }));
           }
           if (d.influencer !== undefined) {
             setProfile(prev => {
@@ -196,21 +191,11 @@ function App() {
             });
           }
         }
-      } catch {} finally {
-        refreshing = false;
-        if (refreshAgain && !cancelled) { refreshAgain = false; void loadWallet(); }
-      }
+      } catch {}
     };
     void loadWallet();
-    const refresh = () => { void loadWallet(); };
-    window.addEventListener('pg-wallet-changed', refresh);
-    window.addEventListener('focus', refresh);
-    return () => { cancelled = true; window.removeEventListener('pg-wallet-changed', refresh); window.removeEventListener('focus', refresh); };
+    return () => { cancelled = true; };
   }, [user]);
-
-  useEffect(() => {
-    if (user && profile && !supabaseEnabled) window.dispatchEvent(new Event('pg-wallet-changed'));
-  }, [user?.uid, profile?.walletBalance]);
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -454,7 +439,7 @@ function App() {
           user={user}
         />
       )}
-      {playingGame && <GamePlayModal game={playingGame} onClose={() => { setPlayingGame(null); window.dispatchEvent(new Event('pg-wallet-changed')); }} currentUser={user} />}
+      {playingGame && <GamePlayModal game={playingGame} onClose={() => setPlayingGame(null)} currentUser={user} />}
       {supportOpen && <SupportModal user={user} onClose={() => setSupportOpen(false)} />}
       {withdrawOpen && (
         <WithdrawModal
@@ -999,7 +984,7 @@ function HomePage(props: {
       return [...explicitlyFeatured].sort((a, b) => {
         const aPg = isPgSoftGame(a) ? 0 : 1;
         const bPg = isPgSoftGame(b) ? 0 : 1;
-        return aPg - bPg || Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
+        return aPg - bPg;
       });
     }
     const pgGames = props.games.filter(isPgSoftGame);
@@ -1552,13 +1537,13 @@ function GameSection({ title, games, onGame, favoriteKeys, onFavorite }: { title
 function GameCard({ game, onClick, favorite, onFavorite }: { game: IGameWinGame; onClick: () => void; favorite: boolean; onFavorite: () => void }) {
   const [imageError, setImageError] = useState(false);
   const [customCoverFailed, setCustomCoverFailed] = useState(false);
-  const brandedCover = game.code.startsWith('local-pg-') ? undefined : getBrandedGameCover(game.name);
+  const brandedCover = getBrandedGameCover(game.name);
   const cover = !customCoverFailed && brandedCover ? brandedCover : game.image;
   useEffect(() => { setImageError(false); setCustomCoverFailed(false); }, [game.name, game.image]);
   return <article className="game-card">
     <button className="game-cover" onClick={onClick}>
       {cover && !imageError ? <img src={cover} alt={game.name} loading="lazy" decoding="async" onError={() => { if (brandedCover && !customCoverFailed) setCustomCoverFailed(true); else setImageError(true); }}/> : <div className="game-image-fallback"><SvgIcon src={casinoIcons.slots} size={46}/><span>{game.name}</span></div>}
-      <span className="igw-tag">{game.code.startsWith('local-pg-') ? 'PG SOFT' : 'iGameWin'}</span>
+      <span className="igw-tag">iGameWin</span>
       <span className="play-overlay">JOGAR</span>
     </button>
     <div className="game-meta"><div><strong>{game.name}</strong><small>{game.providerName || game.providerCode}</small></div><button className={favorite ? 'favorite active' : 'favorite'} onClick={onFavorite}><Heart size={15} fill={favorite ? 'currentColor' : 'none'}/></button></div>
@@ -3939,10 +3924,10 @@ function GameDetailModal({
         <div className="game-detail-scroll">
           <div className="game-detail-hero">
             <img
-              src={(game.code.startsWith('local-pg-') ? game.image : getBrandedGameCover(game.name) || game.image) || '/brand/zerobet-logo.svg'}
+              src={getBrandedGameCover(game.name) || game.image || '/brand/zerobet-logo.svg'}
               alt={game.name}
               className="game-detail-cover"
-              onError={(e: any) => { e.currentTarget.onerror = null; e.currentTarget.src = '/brand/zerobet-logo.svg'; }}
+              onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&auto=format&fit=crop&q=80'; }}
             />
             <div className="game-detail-info">
               <div className="game-detail-category">
@@ -4062,49 +4047,41 @@ function BottomNav({ tab, setTab, onMenu, theme }: { tab: Tab; setTab: (t: Tab) 
 
 
 function GamePlayModal({ game, onClose, currentUser }: { game: IGameWinGame; onClose: () => void; currentUser: User | null }) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [gameUrl, setGameUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [full, setFull] = useState(false);
-  const localPg = game.code.startsWith('local-pg-');
-
-  useEffect(() => {
-    if (!localPg) return;
-    const receive = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || event.source !== iframeRef.current?.contentWindow) return;
-      if (event.data?.type === 'PG_WALLET_CHANGED') window.dispatchEvent(new Event('pg-wallet-changed'));
-      if (event.data?.type === 'PG_CLOSE_GAME') onClose();
-    };
-    window.addEventListener('message', receive);
-    const snapshot = (event: Event) => {
-      const detail = (event as CustomEvent).detail;
-      if (detail?.uid !== currentUser?.uid) return;
-      iframeRef.current?.contentWindow?.postMessage({ type: 'PG_AUTHORITATIVE_BALANCE', balance: detail.balance }, window.location.origin);
-    };
-    window.addEventListener('pg-wallet-snapshot', snapshot);
-    const timer = window.setInterval(() => window.dispatchEvent(new Event('pg-wallet-changed')), 15000);
-    return () => { window.removeEventListener('message', receive); window.removeEventListener('pg-wallet-snapshot', snapshot); window.clearInterval(timer); };
-  }, [localPg, onClose, currentUser?.uid]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setError(''); setGameUrl(null);
-      try {
-        if (!currentUser) throw new Error('Entre na sua conta para iniciar o jogo.');
-        const token = await currentUser.getIdToken();
-        const r = await fetch('/api/game_launch', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ game_code: game.code, provider_code: game.providerCode, demo: false, lang: 'pt' }) });
-        const data = await r.json();
-        if (!r.ok || !data.launch_url) throw new Error(apiErrorMessage(r.status,data,'Não foi possível iniciar o jogo.'));
-        if (!cancelled) setGameUrl(data.launch_url);
-      } catch (e: any) { if (!cancelled) setError(e.message); }
-      finally { if (!cancelled) setLoading(false); }
+  const [gameUrl,setGameUrl]=useState<string|null>(null);
+  const [loading,setLoading]=useState(true),[frameLoaded,setFrameLoaded]=useState(false);
+  const [error,setError]=useState(''),[attempt,setAttempt]=useState(0);
+  const closeRef=useRef(onClose);closeRef.current=onClose;
+  useEffect(()=>{
+    const previous=document.body.style.overflow;document.body.style.overflow='hidden';
+    return()=>{document.body.style.overflow=previous;};
+  },[]);
+  useEffect(()=>{
+    let cancelled=false;const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),25000);
+    (async()=>{
+      setLoading(true);setError('');setGameUrl(null);setFrameLoaded(false);
+      try{
+        if(!currentUser)throw new Error('Entre na sua conta para iniciar o jogo.');
+        let token=await currentUser.getIdToken();
+        const request=()=>fetch('/api/game_launch',{method:'POST',cache:'no-store',signal:controller.signal,headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({game_code:game.code,provider_code:game.providerCode,demo:false,lang:'pt'})});
+        let r=await request();if(r.status===401){token=await currentUser.getIdToken(true);r=await request();}
+        const data=await r.json().catch(()=>({}));
+        if(!r.ok||!data.launch_url)throw new Error(apiErrorMessage(r.status,data,'Não foi possível gerar a sessão do jogo.'));
+        const target=new URL(data.launch_url,location.origin);if(!/^https?:$/.test(target.protocol))throw new Error('URL de jogo inválida.');
+        if(cancelled)return;
+        // Mobile opens at top level: no nested viewport, iframe storage or WebGL context.
+        if(matchMedia('(pointer: coarse)').matches||matchMedia('(max-width: 767px)').matches){closeRef.current();location.assign(target.href);return;}
+        setGameUrl(target.href);
+      }catch(e:any){if(!cancelled)setError(e.name==='AbortError'?'A conexão demorou demais. Tente novamente.':e.message);}
+      finally{clearTimeout(timer);if(!cancelled)setLoading(false);}
     })();
-    return () => { cancelled = true; };
-  }, [game, currentUser]);
-
-  return <div className="modal-backdrop"><div className={`game-modal ${full ? 'fullscreen' : ''}`}><div className="game-toolbar"><div><b>{game.name}</b><span>{game.providerName || game.providerCode}{localPg ? '' : ' • iGameWin'}</span></div><div><button onClick={() => setFull(v => !v)}>{full ? <Minimize2 size={18}/> : <Maximize2 size={18}/>}</button><button onClick={onClose}><X size={18}/></button></div></div><div className="iframe-area">{loading && <div className="game-state"><RefreshCw className="spin"/><strong>Abrindo jogo...</strong></div>}{error && <div className="game-state error"><AlertCircle/><strong>Não foi possível abrir o jogo</strong><span>{error}</span></div>}{gameUrl && <iframe ref={iframeRef} src={gameUrl} title={game.name} referrerPolicy="same-origin" allow="autoplay; fullscreen; screen-wake-lock"/>}</div></div></div>;
+    return()=>{cancelled=true;clearTimeout(timer);controller.abort();};
+  },[game.code,game.providerCode,currentUser,attempt]);
+  return createPortal(<div className="pg-game-screen" role="dialog" aria-modal="true" aria-label={game.name}>
+    <button className="pg-game-back" onClick={()=>closeRef.current()} aria-label="Voltar aos jogos"><ChevronLeft size={18}/>Voltar</button>
+    {(loading||(!frameLoaded&&gameUrl&&!error))&&<div className="pg-game-status"><RefreshCw className="spin"/><strong>Abrindo jogo…</strong></div>}
+    {error&&<div className="pg-game-status"><AlertCircle/><strong>Não foi possível abrir o jogo</strong><span>{error}</span><button onClick={()=>setAttempt(v=>v+1)}>Tentar novamente</button></div>}
+    {gameUrl&&<iframe key={gameUrl} src={gameUrl} title={game.name} onLoad={()=>setFrameLoaded(true)} onError={()=>setError('Falha ao carregar o jogo. Tente novamente.')} allow="autoplay; fullscreen; screen-wake-lock" allowFullScreen/>}
+  </div>,document.body);
 }
 
 function SupportModal({ user, onClose }: { user: User | null; onClose: () => void }) {
@@ -4124,8 +4101,8 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 
 function money(value: number) { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number.isFinite(value) ? value : 0); }
 function formatActivity(tx: any) {
-  if (tx.type === 'user_bet' || tx.type === 'BET') return 'Aposta em jogo';
-  if (tx.type === 'user_win' || tx.type === 'WIN') return 'Prêmio de jogo';
+  if (tx.type === 'user_bet') return 'Aposta em jogo';
+  if (tx.type === 'user_win') return 'Prêmio de jogo';
   if (tx.type === 'user_rollback') return 'Estorno de jogo';
   if (tx.type === 'DEPOSIT') return 'Solicitação de depósito';
   if (tx.type === 'WITHDRAW') return 'Solicitação de saque';

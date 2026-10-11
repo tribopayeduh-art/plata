@@ -1,0 +1,116 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ZeroBet API de jogos locais",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/api/pg/v1"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "paths": {
+    "/games": {
+      "get": {
+        "summary": "Cat\u00e1logo",
+        "responses": {
+          "200": {
+            "description": "Sucesso"
+          },
+          "401": {
+            "description": "Token inv\u00e1lido ou revogado"
+          },
+          "503": {
+            "description": "Servi\u00e7o indispon\u00edvel"
+          }
+        }
+      }
+    },
+    "/balance": {
+      "post": {
+        "summary": "Consultar carteira",
+        "responses": {
+          "200": {
+            "description": "Sucesso"
+          },
+          "401": {
+            "description": "Token inv\u00e1lido ou revogado"
+          },
+          "503": {
+            "description": "Servi\u00e7o indispon\u00edvel"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "player_id"
+                ],
+                "properties": {
+                  "player_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/launch": {
+      "post": {
+        "summary": "Criar sess\u00e3o",
+        "responses": {
+          "200": {
+            "description": "Sucesso"
+          },
+          "401": {
+            "description": "Token inv\u00e1lido ou revogado"
+          },
+          "503": {
+            "description": "Servi\u00e7o indispon\u00edvel"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "player_id",
+                  "game_code"
+                ],
+                "properties": {
+                  "player_id": {
+                    "type": "string"
+                  },
+                  "game_code": {
+                    "type": "string",
+                    "example": "local-pg-126"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

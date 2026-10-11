@@ -114,31 +114,19 @@ service cloud.firestore {
     match /users/{uid} {
       allow get: if self(uid) || adminUser();
       allow list: if adminUser();
-      allow create: if adminUser() || (self(uid) &&
-        request.resource.data.get("walletBalance", 0) == 0 &&
-        request.resource.data.get("balance", 0) == 0 &&
-        request.resource.data.get("realBalance", 0) == 0 &&
-        request.resource.data.get("bonusBalance", 0) == 0 &&
-        request.resource.data.get("role", "user") in ["user", "player"] &&
-        request.resource.data.get("admin", false) == false &&
-        request.resource.data.get("isAdmin", false) == false);
+      allow create: if self(uid) || adminUser();
       allow update: if adminUser() ||
         languageBonusUserUpdate(uid) ||
         (self(uid) &&
           request.resource.data.get("walletBalance", resource.data.get("walletBalance", 0)) == resource.data.get("walletBalance", 0) &&
           request.resource.data.get("balance", resource.data.get("balance", 0)) == resource.data.get("balance", 0) &&
           request.resource.data.get("role", resource.data.get("role", "player")) == resource.data.get("role", "player") &&
-          request.resource.data.get("admin", resource.data.get("admin", false)) == resource.data.get("admin", false) &&
-          request.resource.data.get("isAdmin", resource.data.get("isAdmin", false)) == resource.data.get("isAdmin", false) &&
-          request.resource.data.get("realBalance", resource.data.get("realBalance", 0)) == resource.data.get("realBalance", 0) &&
-          request.resource.data.get("bonusBalance", resource.data.get("bonusBalance", 0)) == resource.data.get("bonusBalance", 0) &&
-          request.resource.data.get("status", resource.data.get("status", "ACTIVE")) == resource.data.get("status", "ACTIVE"));
+          request.resource.data.get("admin", resource.data.get("admin", false)) == resource.data.get("admin", false));
       allow delete: if adminUser();
     }
 
     match /admins/{uid} {
-      allow read: if adminUser() || self(uid);
-      allow write: if adminUser();
+      allow read, write: if adminUser() || self(uid);
     }
 
     match /language_bonus_claims/{uid} {
@@ -283,15 +271,6 @@ service cloud.firestore {
       allow write: if adminUser();
     }
 
-    // PG: carteira, resultados e recibos só podem ser gravados pelo backend Admin.
-    match /pg_game_states/{id} {
-      allow read: if signedIn() && (resource.data.uid == request.auth.uid || adminUser());
-      allow write: if false;
-    }
-    match /pg_rounds/{id} {
-      allow read: if signedIn() && (resource.data.uid == request.auth.uid || adminUser());
-      allow write: if false;
-    }
     match /test/{id} {
       allow read: if true;
       allow write: if adminUser();

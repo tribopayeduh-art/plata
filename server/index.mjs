@@ -1,8 +1,6 @@
+import {pgCatalog,pgProviders,pgGames,isPgProvider,createPgApiClient,launchPgPlayer} from './pg-api/client.mjs';
 import {createClient as createSupabaseClient} from '@supabase/supabase-js';
 import {DEFAULT_PLATFORM_SETTINGS} from './public-settings-defaults.mjs';
-import { classifyPgGame } from './pg-catalog.mjs';
-import { registerPgRoutes } from './pg/routes.mjs';
-import { mergePgCatalog, localPgProvider } from './pg/wallet.mjs';
 import { supabaseMiddleware, supabaseMode } from './supabase-routes.mjs';
 import dotenv from "dotenv";
 import fs from "node:fs";
@@ -250,10 +248,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb", strict: true }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
-registerPgRoutes(app, { db, secret: process.env.PG_SESSION_SECRET, verifyUser,
-  ready: () => firebaseAdminState.privilegedReady || Boolean(process.env.FIRESTORE_EMULATOR_HOST || process.env.K_SERVICE), onCommit: () => {
-  invalidateCachePrefix('users'); invalidateCachePrefix('admin_');
-} });
 app.use(supabaseMiddleware);
 
 const rateBuckets = new Map();
@@ -1362,8 +1356,7 @@ app.get("/api/admin/igamewin/diagnostics", requireAdmin, async (_req, res) => {
 
 app.get(["/api/providers", "/api/igamewin/providers"], async (req, res) => {
   try {
-    const remote = await listProviders({ force: req.query.force === "1" }).catch(() => []);
-    const providers = [localPgProvider, ...remote.filter(provider => String(provider.code).toUpperCase() !== 'PGSOFT').map(provider => /pg|pocket/i.test(`${provider.code} ${provider.name}`) ? { ...provider, name: 'PG SOFT' } : provider)];
+    const providers = pgProviders(await listProviders({ force: req.query.force === "1" }).catch(()=>[]));
     res.json({ success: true, providers, count: providers.length });
   } catch (e) { safeError(res, "[providers]", e); }
 });
@@ -1422,10 +1415,7 @@ function isPgSoftGame(g) {
 app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
   try {
     const provider = String(req.query.provider || "").trim();
-    const rawGames = await listGames(provider, { force: req.query.force === "1" }).catch(error => {
-      console.warn('[catalog] Catálogo local PG disponível;', error.code || 'provedor externo indisponível');
-      return [];
-    });
+    const rawGames = pgGames(isPgProvider(provider)?[]:await listGames(provider, { force: req.query.force === "1" }).catch(()=>[]),provider);
     
     let overridesMap = new Map();
     try {
@@ -1440,7 +1430,7 @@ app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
       }
     } catch {}
 
-    const games = mergePgCatalog((rawGames || []).map(g => {
+    const games = (rawGames || []).map(g => {
       const key = `${g.providerCode}__${g.code}`;
       const ov = overridesMap.get(key);
       const isPg = isPgSoftGame(g);
@@ -1452,7 +1442,7 @@ app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
           name: ov.customName || g.name,
           image: ov.customImage || g.image,
           category: ov.category || (isPg ? 'PG Soft' : g.category) || 'Principais Jogos',
-          rtp: ov.rtp || '97.09%',
+          rtp: g.code.startsWith('local-pg-') ? g.rtp : (ov.rtp || '97.09%'),
           sortOrder: Number(ov.sortOrder || 0),
         };
       }
@@ -1460,17 +1450,9 @@ app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
         ...g,
         featured: isPg,
         category: isPg ? 'PG Soft' : (g.category || 'Principais Jogos'),
-        rtp: '97.09%',
+        rtp: g.rtp || '97.09%',
         sortOrder: 0,
       };
-    }).filter(Boolean).map(classifyPgGame), provider).map(game => {
-      if (!game.code.startsWith('local-pg-')) return game;
-      const override = overridesMap.get(`${game.providerCode}__${game.code}`);
-      if (!override) return game;
-      if (override.enabled === false) return null;
-      return { ...game, name: override.customName || game.name, image: override.customImage || game.image,
-        featured: override.featured === undefined ? true : Boolean(override.featured),
-        sortOrder: override.sortOrder === undefined ? game.sortOrder : Number(override.sortOrder) };
     }).filter(Boolean);
 
     res.json({ success: true, games, count: games.length });
@@ -1491,23 +1473,31 @@ app.post("/api/user_create", verifyUser, async (req, res) => {
   } catch (e) { safeError(res, "[user_create]", e); }
 });
 
-app.post(["/api/user/sync", "/api/user_sync"], verifyUser, async (req, res) => {
+app.post(["/api/user/sync", "/api/user_sync"], async (req, res) => {
   try {
     const body = req.body || {};
-    const uid = String(req.user?.uid || "").trim();
+    const uid = String(body.uid || req.user?.uid || "").trim();
     if (!uid) return res.status(400).json({ error: "UID_REQUIRED" });
 
     const rawName = body.displayName || body.name || body.fullName || (body.email ? body.email.split("@")[0] : "") || "Jogador";
     const userObj = {
       uid,
       id: uid,
-      email: req.user.email || "",
+      email: body.email || "",
       displayName: rawName,
       name: rawName,
       cpf: body.cpf || "",
       phone: body.phone || "",
       birthDate: body.birthDate || "",
+      role: body.role || "player",
+      admin: Boolean(body.admin),
       referralCode: body.referralCode || body.referredBy || "",
+      status: body.status || "ACTIVE",
+      kycStatus: body.kycStatus || "NOT_STARTED",
+      walletBalance: Number(body.walletBalance ?? body.balance ?? 0),
+      balance: Number(body.walletBalance ?? body.balance ?? 0),
+      realBalance: Number(body.realBalance ?? body.walletBalance ?? body.balance ?? 0),
+      bonusBalance: Number(body.bonusBalance ?? 0),
       updatedAt: new Date().toISOString()
     };
 
@@ -1516,8 +1506,7 @@ app.post(["/api/user/sync", "/api/user_sync"], verifyUser, async (req, res) => {
     invalidateCachePrefix("admin_dashboard");
 
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
-    const result = await fastWriteFirestoreDoc("users", uid, userObj, token);
-    if (!result.ok) return res.status(503).json({ error: 'PROFILE_SYNC_FAILED' });
+    fastWriteFirestoreDoc("users", uid, userObj, token).catch(() => {});
 
     res.json({ success: true, user: userObj });
   } catch (err) {
@@ -1532,6 +1521,13 @@ app.post(["/api/game_launch", "/api/igamewin/launch"], verifyUser, async (req, r
   if (!provider) return res.status(400).json({ error: "PROVIDER_CODE_REQUIRED" });
 
   try {
+    if(isPgProvider(provider)){
+      if(demo)return res.status(400).json({message:"Use a carteira autenticada para abrir os jogos PG."});
+      if(supabaseMode())return res.status(503).json({message:"A carteira PG desta integração usa Firebase. Configure o mesmo banco da API."});
+      const call=createPgApiClient({url:process.env.PG_API_URL,token:process.env.PG_API_TOKEN});
+      const result=await launchPgPlayer(call,req.user.uid,game);
+      return res.json(result);
+    }
     let userCode = req.user.uid;
     if (demo) {
       userCode = `${req.user.uid}_demo`;
@@ -1547,8 +1543,9 @@ app.post(["/api/game_launch", "/api/igamewin/launch"], verifyUser, async (req, r
       const profileResult=await getUserProfileForPayment(userCode,req.idToken);
       if(!profileResult.profile)return res.status(404).json({error:"USER_NOT_FOUND"});
       const firestoreWallet=Number(profileResult.profile?.walletBalance??profileResult.profile?.balance??0);
-      const wallet=firestoreWallet;
-      await syncWalletToProvider(userCode,wallet);
+      const blobWallet=await ledgerWalletBalance(userCode).catch(()=>0);
+      const wallet=Math.max(firestoreWallet,blobWallet);
+      await syncWalletToProvider(userCode,wallet).catch(err=>console.warn("[wallet sync]",err.message));
     }
 
     const data = await igwCall("game_launch", {
@@ -1571,7 +1568,7 @@ app.post(["/api/game_launch", "/api/igamewin/launch"], verifyUser, async (req, r
     }).catch(()=>{});
 
     res.json({ success:true, launch_url:url, raw:data });
-  } catch (e) { safeError(res, "[game_launch]", e); }
+  } catch (e) { if(isPgProvider(provider))return res.status(e.status||502).json({message:e.message||"Falha ao conectar à API PG."});safeError(res, "[game_launch]", e); }
 });
 
 app.get("/api/player/game-logs", verifyUser, async (req, res) => {
@@ -1588,8 +1585,7 @@ app.get("/api/player/game-logs", verifyUser, async (req, res) => {
 app.get("/api/wallet/summary", verifyUser, async (req, res) => {
   try {
     const uid = req.user.uid;
-    let profile = await fastReadFirestoreDoc("users", uid, req.idToken);
-    if (!profile) return res.status(503).json({ error: 'WALLET_UNAVAILABLE', message: 'Não foi possível consultar a carteira.' });
+    let profile = await fastReadFirestoreDoc("users", uid, req.idToken) || {};
     const walletBalance = Number(profile.walletBalance ?? profile.balance ?? 0);
     const bonusBalance = Number(profile.bonusBalance ?? 0);
     const realBalance = Number(profile.realBalance ?? walletBalance);
@@ -2281,7 +2277,7 @@ app.post("/api/admin/users/:uid/wallet-adjustment", requireAdmin, async (req, re
         if (after < 0) throw new Error("NEGATIVE_BALANCE_NOT_ALLOWED");
 
         const defaultReason = mode === "SET" 
-          ? `Definição de Saldo (${moneyFmt(before)} -> ${moneyFmt(after)})`
+          ? `Definição de Saldo (${`R$ ${before.toFixed(2)}`} -> ${`R$ ${after.toFixed(2)}`})`
           : `Ajuste Administrativo (${delta >= 0 ? '+' : ''}R$ ${delta.toFixed(2)})`;
         const reason = String(req.body?.reason || "").trim() || defaultReason;
         
@@ -8747,11 +8743,6 @@ app.post("/api/webhook/pix", handleWebhookReconciliation);
 
 /* callback kept for providers that use seamless-wallet callbacks */
 app.post("/api/igamewin/callback", async (req, res) => {
-  const expected = String(process.env.IGW_CALLBACK_SECRET || AGENT_TOKEN || '');
-  const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String(req.body?.agent_token || '');
-  if (!expected || expected.length !== supplied.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))) {
-    return res.status(401).json({ status: 0, message: 'INVALID_CALLBACK_AUTH' });
-  }
   const { action, user_code, amount, transaction_id, game_code, round_id } = req.body || {};
   if (!user_code) return res.status(400).json({ status: 0, message: "USER_REQUIRED" });
 
@@ -8895,7 +8886,6 @@ if (!IS_NETLIFY) {
     console.log(`Domain: resenhaa.bet`);
     console.log(`iGameWin: ${igwConfigured() ? "CONFIGURED" : "NOT CONFIGURED"} | ${IGW_URL}`);
     console.log(`Wallet sync: ${SYNC_WALLET ? "ON" : "OFF"} | RTP control: ${ENABLE_RTP_CONTROL ? "ON" : "OFF"}`);
-    console.log(`PG local: 11 jogos | RTP: 20% | carteira: Firebase | credencial Admin: ${firebaseAdminState.privilegedReady ? 'configurada' : 'configurar conta de serviço'}`);
     
     // Auto pre-warm catalog in background so games load instantly
     if (igwConfigured()) {

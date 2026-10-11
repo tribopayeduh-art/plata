@@ -1,0 +1,39 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>API de jogos · Documentação</title><style>body{max-width:900px;margin:40px auto;padding:0 22px;font:16px/1.6 system-ui;background:#111;color:#eee}h1,h2{color:#eab4be}pre{background:#222;padding:20px;border-radius:12px;overflow:auto}code{color:#eecbd1}a{color:#eab4be}</style><h1>API de jogos locais — v1</h1><p>11 clientes extraídos, motor local, carteira Firebase ou callback externo. Esta integração não é a API oficial da PG SOFT. O G1008 e a validação visual completa ainda estão pendentes.</p><h2>Acesso no GPT Sites</h2><p>Esta publicação é privada para testes do proprietário. Chamadas de servidor precisam também do cabeçalho OAI-Sites-Authorization com o token de acesso de serviço do Sites. Jogadores externos precisam de acesso autorizado ao site; o token da API não torna a página pública.</p><h2>1. Criar uma integração</h2><p>No painel admin, abra API de jogos. Escolha Firebase (UID existente da ZeroBet) ou callback externo. Guarde o token no backend. Na carteira externa, guarde também o segredo HMAC mostrado na emissão. As chaves não são exibidas novamente. Para trocar uma chave, crie outra integração e revogue a anterior.</p><h2>2. Chamar a API</h2><p>Base: https://SEU-SERVIDOR/api/pg/v1. Em localhost: http://localhost:3000/api/pg/v1. O servidor aplica proteção de frequência por IP; no GPT Sites, o contador é por instância. Trate HTTP 429.</p><pre>GET /games
+Authorization: Bearer pg_live_SEU_TOKEN
+
+POST /balance
+Authorization: Bearer pg_live_SEU_TOKEN
+Content-Type: application/json
+{"player_id":"ID_DO_JOGADOR"}
+
+POST /launch
+Authorization: Bearer pg_live_SEU_TOKEN
+Content-Type: application/json
+{"player_id":"ID_DO_JOGADOR","game_code":"local-pg-126"}</pre><p>Abra launch_url em uma página ou iframe ocupando toda a tela. Sessão válida por até 6 horas. Trate-a como segredo temporário. Nunca envie o token de integração ao navegador. O backend da sua plataforma precisa autenticar o jogador e usar seu ID real; não aceite player_id arbitrário enviado pelo cliente.</p><h2>3. Contrato da carteira externa</h2><p>O callback deve ser HTTPS público na porta 443. Não aceita redirects ou IP privado. Resposta JSON de até 64 KB, HTTP 200 em até 8 segundos. Valores em reais, com duas casas decimais, moeda BRL.</p><pre>POST SUA_URL_DE_CALLBACK
+X-PG-Integration: ID_DA_INTEGRACAO
+X-PG-Timestamp: timestamp em milissegundos
+X-PG-Signature: assinatura hexadecimal
+Content-Type: application/json
+
+{"action":"balance","player_id":"123","currency":"BRL"}
+
+Resposta:
+{"status":"ok","balance":100.00,"currency":"BRL"}</pre><h2>4. Validar a assinatura</h2><p>Use o corpo bruto antes de interpretar JSON. Verifique ID da integração, timestamp com tolerância de 60 segundos e assinatura em tempo constante. Assinatura = HMAC-SHA256(segredo, timestamp + "." + corpo_bruto).</p><pre>import crypto from "node:crypto";
+const expected = crypto.createHmac("sha256", secret)
+  .update(timestamp + "." + rawBody).digest("hex");
+const valid = signature.length === expected.length &amp;&amp;
+  crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));</pre><h2>5. Liquidar a rodada de forma atômica</h2><pre>{"action":"settle","player_id":"123","currency":"BRL",
+ "round_id":"IDENTIFICADOR_UNICO","bet":0.40,"win":1.20,
+ "game_code":"local-pg-126"}
+
+Resposta de sucesso:
+{"status":"ok","balance_before":100.00,"balance":100.80,"currency":"BRL"}
+
+Saldo insuficiente ou jogador bloqueado:
+{"status":"declined","balance":0.00}</pre><p>Em uma transação no seu banco: verifique se round_id já existe; se existir, confira jogador, aposta e prêmio e retorne a resposta original; senão confira saldo e bloqueios, debite bet, credite win, registre round_id com sua resposta e confirme a transação. Não separe o débito e o prêmio em duas chamadas. Restrinja a unicidade ao ID da integração e da rodada. Nunca use uma resposta de saldo desatualizada para escrever a carteira.</p><p>A API registra a rodada antes da chamada. Falhas de rede mantêm a rodada pendente, sem gerar outro resultado. Reabrir o jogo tenta confirmar usando o mesmo round_id. A idempotência no callback é obrigatória: não há garantia contra cobrança duplicada se a plataforma integradora ignorar esse contrato. Revogar uma integração com rodadas pendentes exige reconciliá-las com a outra plataforma antes da revogação.</p><h2>6. Exemplo de carteira</h2><p>O arquivo examples/pg-wallet-callback.mjs contém uma carteira SQLite independente com validação HMAC e registro idempotente. Requer Node 24. Use apenas para teste: não usa os jogadores da ZeroBet. Faça um proxy HTTPS para conectar a API ao exemplo.</p><pre>node examples/pg-wallet-callback.mjs --seed jogador1 100
+
+# Variáveis do servidor de exemplo:
+PG_CALLBACK_SECRET=SEGREDO_EMITIDO
+PG_INTEGRATION_ID=ID_EMITIDO
+
+node examples/pg-wallet-callback.mjs</pre><h2>Erros</h2><p>400: campos inválidos. 401: token/sessão inválidos ou revogados. 403: conta ou jogo bloqueado. 404: jogador/jogo inexistente. 409: rodada ou carteira incompatível. 429: limite de requisições. 502/503: carteira ou Firebase indisponível. Uma rodada incerta não deve ser debitada manualmente: reconcilie pelo round_id.</p><p><a href="pg-openapi.json">Baixar especificação OpenAPI</a></p></html>

@@ -1,7 +1,3 @@
-# ZeroBet — 11 jogos PG SOFT
-
-Consulte **LEIA-PRIMEIRO-PG-SOFT.md** para rodar no localhost e configurar a carteira.
-
 # Amora BET — V6 | Login/Cadastro + Carrossel de Banners
 
 # Amora BET V5 — Depósito + Catálogo iGameWin corrigido

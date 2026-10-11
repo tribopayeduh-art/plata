@@ -15,3 +15,6 @@ firebase-service-account.json
 *.pem
 *.key
 **/firebase-service-account*.json
+
+secrets/
+.env.local
