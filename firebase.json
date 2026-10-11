@@ -1,7 +1,8 @@
 {
   "firestore": {
     "rules": "firestore.rules",
-    "database": "ai-studio-zerobet-510360dd-257a-4327-a126-726b12c9c6d1"
+    "database": "ai-studio-zerobet-510360dd-257a-4327-a126-726b12c9c6d1",
+    "indexes": "firestore.indexes.json"
   },
   "database": {
     "rules": "database.rules.json"

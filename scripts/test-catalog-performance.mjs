@@ -2,7 +2,8 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 const compile=file=>ts.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2020}}).outputText;
 const dataUrl=code=>'data:text/javascript;base64,'+Buffer.from(code).toString('base64');
 const errorUrl=dataUrl(compile('../src/lib/apiError.ts'));
-const {fetchIgamewinGames,saveCachedGames}=await import(dataUrl(compile('../src/lib/igamewin.ts').replace('from "./apiError"',`from "${errorUrl}"`)));
+const localPgUrl=dataUrl(compile('../src/lib/localPgCatalog.ts'));
+const {fetchIgamewinGames,saveCachedGames}=await import(dataUrl(compile('../src/lib/igamewin.ts').replace('from "./apiError"',`from "${errorUrl}"`).replace("from './localPgCatalog'",`from "${localPgUrl}"`)));
 const originalFetch=globalThis.fetch,originalStorage=globalThis.localStorage;
 const store=new Map();globalThis.localStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)};
 test.after(()=>{globalThis.fetch=originalFetch;if(originalStorage)globalThis.localStorage=originalStorage;else delete globalThis.localStorage;});

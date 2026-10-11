@@ -1,5 +1,8 @@
 import {createClient as createSupabaseClient} from '@supabase/supabase-js';
 import {DEFAULT_PLATFORM_SETTINGS} from './public-settings-defaults.mjs';
+import { classifyPgGame } from './pg-catalog.mjs';
+import { registerPgRoutes } from './pg/routes.mjs';
+import { mergePgCatalog, localPgProvider } from './pg/wallet.mjs';
 import { supabaseMiddleware, supabaseMode } from './supabase-routes.mjs';
 import dotenv from "dotenv";
 import fs from "node:fs";
@@ -247,6 +250,10 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb", strict: true }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+registerPgRoutes(app, { db, secret: process.env.PG_SESSION_SECRET, verifyUser,
+  ready: () => firebaseAdminState.privilegedReady || Boolean(process.env.FIRESTORE_EMULATOR_HOST || process.env.K_SERVICE), onCommit: () => {
+  invalidateCachePrefix('users'); invalidateCachePrefix('admin_');
+} });
 app.use(supabaseMiddleware);
 
 const rateBuckets = new Map();
@@ -1355,7 +1362,8 @@ app.get("/api/admin/igamewin/diagnostics", requireAdmin, async (_req, res) => {
 
 app.get(["/api/providers", "/api/igamewin/providers"], async (req, res) => {
   try {
-    const providers = await listProviders({ force: req.query.force === "1" });
+    const remote = await listProviders({ force: req.query.force === "1" }).catch(() => []);
+    const providers = [localPgProvider, ...remote.filter(provider => String(provider.code).toUpperCase() !== 'PGSOFT').map(provider => /pg|pocket/i.test(`${provider.code} ${provider.name}`) ? { ...provider, name: 'PG SOFT' } : provider)];
     res.json({ success: true, providers, count: providers.length });
   } catch (e) { safeError(res, "[providers]", e); }
 });
@@ -1414,7 +1422,10 @@ function isPgSoftGame(g) {
 app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
   try {
     const provider = String(req.query.provider || "").trim();
-    const rawGames = await listGames(provider, { force: req.query.force === "1" });
+    const rawGames = await listGames(provider, { force: req.query.force === "1" }).catch(error => {
+      console.warn('[catalog] Catálogo local PG disponível;', error.code || 'provedor externo indisponível');
+      return [];
+    });
     
     let overridesMap = new Map();
     try {
@@ -1429,7 +1440,7 @@ app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
       }
     } catch {}
 
-    const games = (rawGames || []).map(g => {
+    const games = mergePgCatalog((rawGames || []).map(g => {
       const key = `${g.providerCode}__${g.code}`;
       const ov = overridesMap.get(key);
       const isPg = isPgSoftGame(g);
@@ -1452,6 +1463,14 @@ app.get(["/api/games", "/api/igamewin/games"], async (req, res) => {
         rtp: '97.09%',
         sortOrder: 0,
       };
+    }).filter(Boolean).map(classifyPgGame), provider).map(game => {
+      if (!game.code.startsWith('local-pg-')) return game;
+      const override = overridesMap.get(`${game.providerCode}__${game.code}`);
+      if (!override) return game;
+      if (override.enabled === false) return null;
+      return { ...game, name: override.customName || game.name, image: override.customImage || game.image,
+        featured: override.featured === undefined ? true : Boolean(override.featured),
+        sortOrder: override.sortOrder === undefined ? game.sortOrder : Number(override.sortOrder) };
     }).filter(Boolean);
 
     res.json({ success: true, games, count: games.length });
@@ -1472,31 +1491,23 @@ app.post("/api/user_create", verifyUser, async (req, res) => {
   } catch (e) { safeError(res, "[user_create]", e); }
 });
 
-app.post(["/api/user/sync", "/api/user_sync"], async (req, res) => {
+app.post(["/api/user/sync", "/api/user_sync"], verifyUser, async (req, res) => {
   try {
     const body = req.body || {};
-    const uid = String(body.uid || req.user?.uid || "").trim();
+    const uid = String(req.user?.uid || "").trim();
     if (!uid) return res.status(400).json({ error: "UID_REQUIRED" });
 
     const rawName = body.displayName || body.name || body.fullName || (body.email ? body.email.split("@")[0] : "") || "Jogador";
     const userObj = {
       uid,
       id: uid,
-      email: body.email || "",
+      email: req.user.email || "",
       displayName: rawName,
       name: rawName,
       cpf: body.cpf || "",
       phone: body.phone || "",
       birthDate: body.birthDate || "",
-      role: body.role || "player",
-      admin: Boolean(body.admin),
       referralCode: body.referralCode || body.referredBy || "",
-      status: body.status || "ACTIVE",
-      kycStatus: body.kycStatus || "NOT_STARTED",
-      walletBalance: Number(body.walletBalance ?? body.balance ?? 0),
-      balance: Number(body.walletBalance ?? body.balance ?? 0),
-      realBalance: Number(body.realBalance ?? body.walletBalance ?? body.balance ?? 0),
-      bonusBalance: Number(body.bonusBalance ?? 0),
       updatedAt: new Date().toISOString()
     };
 
@@ -1505,7 +1516,8 @@ app.post(["/api/user/sync", "/api/user_sync"], async (req, res) => {
     invalidateCachePrefix("admin_dashboard");
 
     const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
-    fastWriteFirestoreDoc("users", uid, userObj, token).catch(() => {});
+    const result = await fastWriteFirestoreDoc("users", uid, userObj, token);
+    if (!result.ok) return res.status(503).json({ error: 'PROFILE_SYNC_FAILED' });
 
     res.json({ success: true, user: userObj });
   } catch (err) {
@@ -1535,9 +1547,8 @@ app.post(["/api/game_launch", "/api/igamewin/launch"], verifyUser, async (req, r
       const profileResult=await getUserProfileForPayment(userCode,req.idToken);
       if(!profileResult.profile)return res.status(404).json({error:"USER_NOT_FOUND"});
       const firestoreWallet=Number(profileResult.profile?.walletBalance??profileResult.profile?.balance??0);
-      const blobWallet=await ledgerWalletBalance(userCode).catch(()=>0);
-      const wallet=Math.max(firestoreWallet,blobWallet);
-      await syncWalletToProvider(userCode,wallet).catch(err=>console.warn("[wallet sync]",err.message));
+      const wallet=firestoreWallet;
+      await syncWalletToProvider(userCode,wallet);
     }
 
     const data = await igwCall("game_launch", {
@@ -1577,7 +1588,8 @@ app.get("/api/player/game-logs", verifyUser, async (req, res) => {
 app.get("/api/wallet/summary", verifyUser, async (req, res) => {
   try {
     const uid = req.user.uid;
-    let profile = await fastReadFirestoreDoc("users", uid, req.idToken) || {};
+    let profile = await fastReadFirestoreDoc("users", uid, req.idToken);
+    if (!profile) return res.status(503).json({ error: 'WALLET_UNAVAILABLE', message: 'Não foi possível consultar a carteira.' });
     const walletBalance = Number(profile.walletBalance ?? profile.balance ?? 0);
     const bonusBalance = Number(profile.bonusBalance ?? 0);
     const realBalance = Number(profile.realBalance ?? walletBalance);
@@ -8735,6 +8747,11 @@ app.post("/api/webhook/pix", handleWebhookReconciliation);
 
 /* callback kept for providers that use seamless-wallet callbacks */
 app.post("/api/igamewin/callback", async (req, res) => {
+  const expected = String(process.env.IGW_CALLBACK_SECRET || AGENT_TOKEN || '');
+  const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String(req.body?.agent_token || '');
+  if (!expected || expected.length !== supplied.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))) {
+    return res.status(401).json({ status: 0, message: 'INVALID_CALLBACK_AUTH' });
+  }
   const { action, user_code, amount, transaction_id, game_code, round_id } = req.body || {};
   if (!user_code) return res.status(400).json({ status: 0, message: "USER_REQUIRED" });
 
@@ -8878,6 +8895,7 @@ if (!IS_NETLIFY) {
     console.log(`Domain: resenhaa.bet`);
     console.log(`iGameWin: ${igwConfigured() ? "CONFIGURED" : "NOT CONFIGURED"} | ${IGW_URL}`);
     console.log(`Wallet sync: ${SYNC_WALLET ? "ON" : "OFF"} | RTP control: ${ENABLE_RTP_CONTROL ? "ON" : "OFF"}`);
+    console.log(`PG local: 11 jogos | RTP: 20% | carteira: Firebase | credencial Admin: ${firebaseAdminState.privilegedReady ? 'configurada' : 'configurar conta de serviço'}`);
     
     // Auto pre-warm catalog in background so games load instantly
     if (igwConfigured()) {

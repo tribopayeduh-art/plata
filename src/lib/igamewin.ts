@@ -1,4 +1,5 @@
 import { apiErrorMessage } from "./apiError";
+import { localPgCatalog, withLocalPgGames } from './localPgCatalog';
 
 export type IGameWinGame = {
   id: string;
@@ -21,8 +22,8 @@ export type IGameWinProvider = {
   image: string;
 };
 
-const CACHE_KEY_GAMES = "amora_catalog_games_v2";
-const CACHE_KEY_PROVIDERS = "amora_catalog_providers_v2";
+const CACHE_KEY_GAMES = "amora_catalog_games_v4_pg_local";
+const CACHE_KEY_PROVIDERS = "amora_catalog_providers_v4_pg_local";
 
 export function getCachedGames(): IGameWinGame[] {
   try {
@@ -32,7 +33,7 @@ export function getCachedGames(): IGameWinGame[] {
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch {}
-  return [];
+  return localPgCatalog;
 }
 
 export function getCachedProviders(): IGameWinProvider[] {
@@ -40,10 +41,10 @@ export function getCachedProviders(): IGameWinProvider[] {
     const raw = localStorage.getItem(CACHE_KEY_PROVIDERS);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) return [{id:'PGSOFT',code:'PGSOFT',name:'PG SOFT',image:'/providers/pgsoft.png'}, ...parsed.filter(p=>p.code!=='PGSOFT')];
     }
   } catch {}
-  return [];
+  return [{id:'PGSOFT',code:'PGSOFT',name:'PG SOFT',image:'/providers/pgsoft.png'}];
 }
 
 export function saveCachedGames(games: IGameWinGame[]) {
@@ -92,8 +93,9 @@ export async function fetchIgamewinGames(provider?: string, maxAttempts = 1): Pr
     try {
       const data = await getJson<{ games: IGameWinGame[] }>(`/api/igamewin/games${qs}`);
       if (Array.isArray(data?.games) && data.games.length > 0) {
-        if (!provider) saveCachedGames(data.games);
-        return data.games;
+        const games = data.games;
+        if (!provider) saveCachedGames(games);
+        return games;
       }
     } catch (err: any) {
       lastError = err;
@@ -109,6 +111,7 @@ export async function fetchIgamewinGames(provider?: string, maxAttempts = 1): Pr
     return cached;
   }
 
+  if (!provider || /^PGSOFT$/i.test(provider)) return withLocalPgGames([], provider);
   if (lastError) throw lastError;
   return cached;
 }
